@@ -27,6 +27,32 @@ fn nightlies_count_as_the_release_they_follow() {
     assert!(is_newer("v0.10.0", "0.9.0-nightly.20261014.36.1"));
 }
 
+#[test]
+fn downstream_marked_tags_are_releases() {
+    let xpt = Some("xpt");
+    assert!(is_newer_marked("v0.23.0-xpt.2", "0.23.0-xpt.1", xpt));
+    assert!(is_newer_marked("v0.24.0-xpt.1", "0.23.0-xpt.9", xpt));
+    assert!(is_newer_marked("v0.23.0-xpt.10", "0.23.0-xpt.9", xpt), "numbered, not sorted as text");
+    assert!(!is_newer_marked("v0.23.0-xpt.1", "0.23.0-xpt.1", xpt));
+    assert!(!is_newer_marked("v0.22.1-xpt.3", "0.23.0-xpt.1", xpt));
+    // Prereleases stay prereleases, and a look-alike mark isn't the mark.
+    assert!(!is_newer_marked("v0.24.0-rc.1", "0.23.0-xpt.1", xpt));
+    assert!(!is_newer_marked("v0.24.0-xptx.1", "0.23.0-xpt.1", xpt));
+    // Without a mark (the project's own build) a marked tag is a prerelease.
+    assert!(!is_newer_marked("v0.24.0-xpt.1", "0.23.0", None));
+    assert!(!is_newer_marked("v0.24.0-xpt.1", "0.23.0", Some("")));
+}
+
+#[test]
+fn downstream_names_and_urls() {
+    assert_eq!(downstream::macos_dmg(Some("SolidCraft-{version}-macos-aarch64.dmg"), "0.23.0-xpt.1"), "SolidCraft-0.23.0-xpt.1-macos-aarch64.dmg");
+    assert_eq!(downstream::macos_dmg(None, "0.23.0"), "solidcraft-macos-universal.dmg");
+    assert_eq!(downstream::macos_dmg(Some(""), "0.23.0"), "solidcraft-macos-universal.dmg");
+    let prefix = downstream::release_prefix("xpt-nl/solidcraft");
+    assert_eq!(prefix, "https://github.com/xpt-nl/solidcraft/releases/");
+    assert!(!"https://github.com/xpt-nl/solidcraft-evil/releases/x".starts_with(&prefix));
+}
+
 fn probe(os: &str, release: bool, env: &[(&str, &str)], exe: &str, files: &[&str]) -> InstallKind {
     let env: BTreeMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let files: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
