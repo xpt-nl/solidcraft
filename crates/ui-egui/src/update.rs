@@ -40,9 +40,23 @@ pub const RELEASES_PAGE: &str = "https://github.com/tangency-labs/solidcraft/rel
 const RELEASE_PREFIXES: [&str; 2] = ["https://github.com/bherbruck/solidcraft/releases/", "https://github.com/tangency-labs/solidcraft/releases/"];
 
 /// A release page or asset URL: github.com, one of the two owners, exactly `solidcraft`, then
-/// `/releases/` (the trailing slash rules out look-alike names such as `solidcraft-evil`).
+/// `/releases/` (the trailing slash rules out look-alike names such as `solidcraft-evil`). A
+/// downstream build accepts its own repository's releases only.
 fn is_release_url(url: &str) -> bool {
-    RELEASE_PREFIXES.iter().any(|p| url.starts_with(p))
+    match downstream::REPO {
+        Some(repo) => url.starts_with(&downstream::release_prefix(repo)),
+        None => RELEASE_PREFIXES.iter().any(|p| url.starts_with(p)),
+    }
+}
+
+/// The request an update check makes ([`LATEST_API`], or the downstream repository's).
+fn latest_api() -> String {
+    downstream::REPO.map_or_else(|| LATEST_API.to_string(), |repo| format!("https://api.github.com/repos/{repo}/releases/latest"))
+}
+
+/// Where Download goes when no package fits ([`RELEASES_PAGE`], or the downstream repository's).
+fn releases_page() -> String {
+    downstream::REPO.map_or_else(|| RELEASES_PAGE.to_string(), |repo| format!("{}latest", downstream::release_prefix(repo)))
 }
 
 /// While the app stays open, automatic checks run once a day (every start checks too).
@@ -112,17 +126,24 @@ pub fn comparable(v: &semver::Version) -> semver::Version {
 /// a string that is not a version, the release history.
 pub fn release_notes_url(version: &str, release_build: bool) -> String {
     const HISTORY: &str = "https://github.com/tangency-labs/solidcraft/releases";
+    let history = downstream::REPO.map_or_else(|| HISTORY.to_string(), |repo| downstream::release_prefix(repo).trim_end_matches('/').to_string());
     if release_build && parse_version(version).is_some() && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
-        format!("{HISTORY}/tag/v{version}")
+        format!("{history}/tag/v{version}")
     } else {
-        HISTORY.to_string()
+        history
     }
 }
 
 /// `latest` (a release tag) is a stable release newer than the `current` build.
 pub fn is_newer(latest: &str, current: &str) -> bool {
+    is_newer_marked(latest, current, downstream::TAG_MARK)
+}
+
+/// [`is_newer`], where a tag carrying the downstream `mark` (`v0.23.0-xpt.1`) is a stable
+/// release too, ordered by its number (`xpt.2` follows `xpt.1`).
+pub fn is_newer_marked(latest: &str, current: &str, mark: Option<&str>) -> bool {
     let (Some(latest), Some(current)) = (parse_version(latest), parse_version(current)) else { return false };
-    latest.pre.is_empty() && latest > comparable(&current)
+    (latest.pre.is_empty() || downstream::is_marked_release(&latest.pre, mark)) && latest > comparable(&current)
 }
 
 /// This build's version: the release workflow's `SOLIDCRAFT_VERSION` (with any nightly suffix)
@@ -464,7 +485,7 @@ pub fn asset_name(kind: &InstallKind, arch: &str, version: &str) -> Option<Strin
         // Only x64 has the lone .exe; elsewhere the portable zip is the same thing.
         InstallKind::WindowsExe if windows == Some("x64") => format!("SolidCraft-{version}-windows-x64.exe"),
         InstallKind::WindowsExe => format!("solidcraft-windows-{}-portable.zip", windows?),
-        InstallKind::MacApp(_) => "solidcraft-macos-universal.dmg".into(),
+        InstallKind::MacApp(_) => downstream::macos_dmg(downstream::MACOS_DMG, version),
         InstallKind::Dev | InstallKind::Web | InstallKind::Other => return None,
     })
 }
@@ -515,7 +536,7 @@ impl Release {
             notes.truncate(cut);
             notes.push_str("\n\n…");
         }
-        let page = Some(s("html_url")).filter(|u| is_release_url(u)).unwrap_or_else(|| RELEASES_PAGE.to_string());
+        let page = Some(s("html_url")).filter(|u| is_release_url(u)).unwrap_or_else(releases_page);
         let assets = v
             .get("assets")
             .and_then(Value::as_array)
@@ -764,7 +785,7 @@ fn fetch_latest(feed: Option<&Path>, http: Option<&HttpGet>) -> Result<Release, 
             file.take(MAX_RELEASE_BYTES as u64 + 1).read_to_end(&mut body).map_err(|e| FetchError::Failed(e.to_string()))?;
             body
         }
-        (None, Some(get)) => get(LATEST_API)?,
+        (None, Some(get)) => get(&latest_api())?,
         (None, None) => return Err(FetchError::Failed("no network client".into())),
     };
     Release::parse(&body)
@@ -1413,6 +1434,7 @@ fn markdown(ui: &mut egui::Ui, src: &str, t: &Tokens) {
     }
 }
 
+pub mod downstream;
 pub mod install;
 
 #[cfg(test)]
