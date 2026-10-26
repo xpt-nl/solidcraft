@@ -49,6 +49,13 @@ replacing the app itself: you drag the new app to Applications, as you did the f
 app and the disk image are signed with a Developer ID and notarized by Apple, so macOS opens the
 new copy without a warning.
 
+If you got SolidCraft from another distributor (such as the xpt build), it looks for that
+distributor's updates instead, and on macOS **Update now** installs the update for you. Before
+anything is replaced, SolidCraft checks that the download is authentic: approved by Apple and
+from the same developer as the copy you're running. Then it offers **Restart now**. If the update
+can't be installed automatically, for example because the app isn't in your Applications folder,
+the disk image opens so you can drag the new app over as usual.
+
 Update now needs write access to the installed file: an AppImage in a folder you can't write to
 fails with a message, and **Download** is the way to update it.
 
