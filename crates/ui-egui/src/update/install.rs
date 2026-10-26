@@ -15,7 +15,13 @@
 //!   `solidcraft.exe.old` (Windows allows renaming a running executable), the new one takes its
 //!   name, and SolidCraft offers a restart; the `.old` file is deleted at the next start.
 //! - macOS: the `.dmg` is verified and opened; the user drags the app to Applications. The
-//!   bundle is never replaced in place from the background.
+//!   bundle is never replaced in place from the background, except in a downstream build that is
+//!   Developer ID signed and notarized (`SOLIDCRAFT_UPDATE_MACOS_TEAM`, see downstream.rs): the
+//!   image must pass Gatekeeper as notarized, and the app in it must be signed by that team
+//!   under this app's bundle identifier, checked again after it's copied next to the old one.
+//!   The old bundle is moved aside and deleted at the next start. Where the app's folder can't
+//!   be written to, the image is opened instead; a translocated app (run from where it was
+//!   downloaded) always gets the image.
 //! - Flatpak, Snap, `.deb`, `.rpm`, `.tar.gz`: never replaced; the window shows the command.
 
 use std::io::{Read, Write};
@@ -57,11 +63,25 @@ pub enum Method {
     Exe(PathBuf),
     /// Open the downloaded disk image.
     Dmg,
+    /// Replace this `.app` bundle with the one in the disk image; `exe` is the running
+    /// executable inside it, started again afterwards.
+    MacApp { bundle: PathBuf, exe: PathBuf, team: String },
 }
 
 /// The in-place update for an installation, if it has one. `exe` is the running executable.
 pub fn method(kind: &InstallKind, exe: Option<&Path>) -> Option<Method> {
+    method_for_team(kind, exe, super::downstream::MACOS_TEAM)
+}
+
+/// [`method`], for a macOS build signed by `team` (None: the project's ad-hoc signed build).
+pub fn method_for_team(kind: &InstallKind, exe: Option<&Path>, team: Option<&str>) -> Option<Method> {
     match kind {
+        InstallKind::MacApp(bundle) if !bundle.to_string_lossy().contains("/AppTranslocation/") => {
+            match (team.filter(|t| is_plain_id(t)), exe) {
+                (Some(team), Some(exe)) => Some(Method::MacApp { bundle: bundle.clone(), exe: exe.to_path_buf(), team: team.to_string() }),
+                _ => Some(Method::Dmg),
+            }
+        }
         InstallKind::AppImage(path) => Some(Method::AppImage(path.clone())),
         InstallKind::WindowsMsi => Some(Method::Msi),
         InstallKind::WindowsPortable => exe.map(|e| Method::PortableZip(e.to_path_buf())),
@@ -219,7 +239,7 @@ pub fn run(
     let part = match method {
         Method::AppImage(target) => sibling(target, ".update")?,
         Method::Exe(exe) => sibling(exe, ".update")?,
-        Method::Msi | Method::Dmg | Method::PortableZip(_) => {
+        Method::Msi | Method::Dmg | Method::PortableZip(_) | Method::MacApp { .. } => {
             std::fs::create_dir_all(staging).map_err(|e| format!("{}: {e}", staging.display()))?;
             staging.join(&asset.name)
         }
@@ -308,7 +328,142 @@ pub fn apply(method: &Method, package: &Path) -> Result<Outcome, String> {
         }
         Method::Msi => Ok(Outcome::Installer(PathBuf::from("msiexec"), vec!["/i".into(), package.to_string_lossy().to_string(), "/passive".into()])),
         Method::Dmg => Ok(Outcome::Opened(package.to_path_buf())),
+        Method::MacApp { bundle, exe, team } => {
+            let outcome = mac::replace(bundle, exe, team, package)?;
+            if matches!(outcome, Outcome::Restart(_)) {
+                let _ = std::fs::remove_file(package);
+            }
+            Ok(outcome)
+        }
     }
+}
+
+/// A Team ID or bundle identifier: letters, digits, `.` and `-` only, so it can be quoted in a
+/// code requirement as it is.
+pub fn is_plain_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 255 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+}
+
+/// The code requirement the new app must meet: signed through Apple's Developer ID chain, by
+/// `team`, under `bundle_id`.
+pub fn mac_requirement(bundle_id: &str, team: &str) -> Result<String, String> {
+    if !is_plain_id(bundle_id) || !is_plain_id(team) {
+        return Err(format!("unexpected bundle identifier `{bundle_id}` or team `{team}`"));
+    }
+    Ok(format!("anchor apple generic and identifier \"{bundle_id}\" and certificate leaf[subject.OU] = \"{team}\""))
+}
+
+/// The in-place macOS update, with the system's own tools (hdiutil, codesign, spctl, ditto).
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::{Outcome, mac_requirement, sibling};
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    /// Run a tool; its error output on failure.
+    fn tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<String, String> {
+        let out = Command::new(program).args(args).output().map_err(|e| format!("{program}: {e}"))?;
+        let text = |b: &[u8]| String::from_utf8_lossy(b).trim().chars().take(600).collect::<String>();
+        if out.status.success() { Ok(text(&out.stdout)) } else { Err(format!("{program}: {}", text(&out.stderr))) }
+    }
+
+    fn os(s: &str) -> &std::ffi::OsStr {
+        std::ffi::OsStr::new(s)
+    }
+
+    /// Detaches the mounted image when dropped, also on an early return.
+    struct Mounted(PathBuf);
+
+    impl Drop for Mounted {
+        fn drop(&mut self) {
+            if tool("hdiutil", &[os("detach"), self.0.as_os_str()]).is_err() {
+                let _ = tool("hdiutil", &[os("detach"), os("-force"), self.0.as_os_str()]);
+            }
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+
+    /// Replace `bundle` with the app in the verified disk image `dmg`.
+    pub fn replace(bundle: &Path, exe: &Path, team: &str, dmg: &Path) -> Result<Outcome, String> {
+        let plist = bundle.join("Contents/Info.plist");
+        let bundle_id = tool("plutil", &[os("-extract"), os("CFBundleIdentifier"), os("raw"), os("-o"), os("-"), plist.as_os_str()])?;
+        let requirement = format!("-R={}", mac_requirement(&bundle_id, team)?);
+        // The image as Gatekeeper sees a download: Developer ID signed and notarized.
+        tool("spctl", &[os("--assess"), os("--type"), os("open"), os("--context"), os("context:primary-signature"), dmg.as_os_str()])
+            .map_err(|e| format!("the disk image isn't notarized: {e}"))?;
+
+        let mount = sibling(dmg, ".mount")?;
+        let _ = std::fs::remove_dir(&mount);
+        std::fs::create_dir(&mount).map_err(|e| format!("{}: {e}", mount.display()))?;
+        tool("hdiutil", &[os("attach"), os("-readonly"), os("-nobrowse"), os("-noautoopen"), os("-mountpoint"), mount.as_os_str(), dmg.as_os_str()])?;
+        let mounted = Mounted(mount);
+        let new = std::fs::read_dir(&mounted.0)
+            .map_err(|e| format!("{}: {e}", mounted.0.display()))?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "app") && !p.is_symlink())
+            .ok_or("the disk image has no app")?;
+        // Not --strict: a mounted image's file system adds Finder info that strict checking refuses.
+        tool("codesign", &[os("--verify"), os("--deep"), os(&requirement), new.as_os_str()])
+            .map_err(|e| format!("the app in the disk image isn't this app from the same developer: {e}"))?;
+
+        // Copy it next to the old bundle (one volume, so the swap is two renames). A folder that
+        // can't be written to gets the image opened instead, for a drag to Applications.
+        let name = bundle.file_name().ok_or_else(|| format!("{} has no name", bundle.display()))?.to_string_lossy().to_string();
+        let parent = bundle.parent().ok_or_else(|| format!("{} has no folder", bundle.display()))?;
+        let staged = parent.join(format!(".{name}.update"));
+        let _ = std::fs::remove_dir_all(&staged);
+        if let Err(e) = std::fs::create_dir(&staged) {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                drop(mounted);
+                return Ok(Outcome::Opened(dmg.to_path_buf()));
+            }
+            return Err(format!("{}: {e}", staged.display()));
+        }
+        let checked = tool("ditto", &[new.as_os_str(), staged.as_os_str()])
+            .and_then(|_| tool("codesign", &[os("--verify"), os("--strict"), os("--deep"), os(&requirement), staged.as_os_str()]))
+            .and_then(|_| tool("spctl", &[os("--assess"), os("--type"), os("execute"), staged.as_os_str()]));
+        drop(mounted);
+        if let Err(e) = checked {
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(format!("the copied app didn't verify; nothing was replaced: {e}"));
+        }
+
+        let old = parent.join(format!(".{name}.old"));
+        let _ = std::fs::remove_dir_all(&old);
+        std::fs::rename(bundle, &old).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&staged);
+            format!("moving {} aside: {e}", bundle.display())
+        })?;
+        if let Err(e) = std::fs::rename(&staged, bundle) {
+            let _ = std::fs::rename(&old, bundle);
+            let _ = std::fs::remove_dir_all(&staged);
+            return Err(format!("putting the new {} in place: {e}", bundle.display()));
+        }
+        Ok(Outcome::Restart(exe.to_path_buf()))
+    }
+
+    /// At start: delete the bundle a previous update moved aside (`.SolidCraft.app.old`).
+    pub fn clean_up(bundle: &Path) {
+        if let (Some(parent), Some(name)) = (bundle.parent(), bundle.file_name()) {
+            let old = parent.join(format!(".{}.old", name.to_string_lossy()));
+            if old.is_dir() {
+                let _ = std::fs::remove_dir_all(old);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod mac {
+    use super::Outcome;
+    use std::path::Path;
+
+    pub fn replace(_: &Path, _: &Path, _: &str, _: &Path) -> Result<Outcome, String> {
+        Err("replacing a macOS app works on macOS only".into())
+    }
+
+    pub fn clean_up(_: &Path) {}
 }
 
 /// `path` with `suffix` appended to its file name, in the same folder.
@@ -379,6 +534,9 @@ fn make_executable(_: &Path) -> Result<(), String> {
 
 /// At start: delete the executable a previous update moved aside (`solidcraft.exe.old`).
 pub fn clean_up_after_update(exe: Option<&Path>) {
+    if let Some(bundle) = exe.and_then(super::app_bundle) {
+        mac::clean_up(&bundle);
+    }
     for file in [exe.map(Path::to_path_buf), exe.and_then(|e| e.parent()).map(|d| d.join("solidcraft-cli.exe"))].into_iter().flatten() {
         if let Ok(old) = sibling(&file, ".old")
             && old.exists()
