@@ -43,6 +43,14 @@ still gets the package for a manual install. On macOS SolidCraft opens the disk 
 replacing the app itself, because the app is ad-hoc signed and not notarized: replacing it in the
 background would install code macOS can't vouch for without you seeing it.
 
+A build distributed by someone else with its own Developer ID (set when it's built; see
+`crates/ui-egui/src/update/downstream.rs`) checks that distributor's releases instead, and on
+macOS **Update now** replaces the app in place: the disk image must pass Gatekeeper as notarized,
+and the app in it must be signed by the same team under the same bundle identifier, before and
+after it's copied next to the old one. Then SolidCraft offers **Restart now**; the old copy is
+deleted at the next start. Where the app's folder can't be written to, or the app runs from
+where it was downloaded, the disk image is opened as above.
+
 Update now needs write access to the installed file: an AppImage in a folder you can't write to
 fails with a message, and **Download** is the way to update it.
 
