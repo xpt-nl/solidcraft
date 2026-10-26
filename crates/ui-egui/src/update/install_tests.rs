@@ -47,6 +47,34 @@ fn signatures_must_match_the_key_the_list_and_the_release() {
 }
 
 #[test]
+fn a_signed_mac_build_replaces_its_bundle() {
+    let (bundle, exe) = (PathBuf::from("/Applications/SolidCraft.app"), PathBuf::from("/Applications/SolidCraft.app/Contents/MacOS/SolidCraft"));
+    let kind = InstallKind::MacApp(bundle.clone());
+    assert_eq!(
+        method_for_team(&kind, Some(&exe), Some("XZ2DGSBA6Q")),
+        Some(Method::MacApp { bundle: bundle.clone(), exe: exe.clone(), team: "XZ2DGSBA6Q".into() })
+    );
+    // The project's ad-hoc signed build, an odd team, no executable: the image is opened.
+    assert_eq!(method_for_team(&kind, Some(&exe), None), Some(Method::Dmg));
+    assert_eq!(method_for_team(&kind, Some(&exe), Some("X\" or 1")), Some(Method::Dmg));
+    assert_eq!(method_for_team(&kind, None, Some("XZ2DGSBA6Q")), Some(Method::Dmg));
+    // Run from where it was downloaded (translocated): never replaced in place.
+    let moved = InstallKind::MacApp("/private/var/folders/x/T/AppTranslocation/1234/d/SolidCraft.app".into());
+    assert_eq!(method_for_team(&moved, Some(&exe), Some("XZ2DGSBA6Q")), Some(Method::Dmg));
+}
+
+#[test]
+fn mac_requirement_quotes_only_plain_ids() {
+    assert_eq!(
+        mac_requirement("nl.xpt.solidcraft", "XZ2DGSBA6Q").unwrap(),
+        "anchor apple generic and identifier \"nl.xpt.solidcraft\" and certificate leaf[subject.OU] = \"XZ2DGSBA6Q\""
+    );
+    for (id, team) in [("a\" or anchor apple", "T"), ("a", "T\"x"), ("", "T"), ("a", ""), ("a b", "T")] {
+        assert!(mac_requirement(id, team).is_err(), "{id} {team}");
+    }
+}
+
+#[test]
 fn methods_per_installation() {
     let exe = Path::new("/x/solidcraft.exe");
     assert_eq!(method(&InstallKind::AppImage("/a/S.AppImage".into()), Some(exe)), Some(Method::AppImage("/a/S.AppImage".into())));
@@ -245,4 +273,26 @@ fn an_updated_appimage_takes_the_release_file_name() {
     assert!(!old.exists());
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "nothing else is left behind");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The real thing, by hand: `SOLIDCRAFT_TEST_MAC_APP` is a copy of a Developer ID signed
+/// SolidCraft.app in a scratch folder, `SOLIDCRAFT_TEST_MAC_DMG` a notarized image of a newer
+/// build by the same team, `SOLIDCRAFT_TEST_MAC_TEAM` that team. The copy is replaced.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "needs a signed app, a notarized image and the network (Gatekeeper)"]
+fn mac_bundle_is_replaced_by_the_image() {
+    let (Ok(app), Ok(dmg), Ok(team)) =
+        (std::env::var("SOLIDCRAFT_TEST_MAC_APP"), std::env::var("SOLIDCRAFT_TEST_MAC_DMG"), std::env::var("SOLIDCRAFT_TEST_MAC_TEAM"))
+    else {
+        return;
+    };
+    let bundle = PathBuf::from(app);
+    let exe = bundle.join("Contents/MacOS/SolidCraft");
+    let method = method_for_team(&InstallKind::MacApp(bundle.clone()), Some(&exe), Some(&team)).unwrap();
+    assert_eq!(apply(&method, Path::new(&dmg)).unwrap(), Outcome::Restart(exe.clone()));
+    let old = bundle.with_file_name(format!(".{}.old", bundle.file_name().unwrap().to_string_lossy()));
+    assert!(old.is_dir(), "the old bundle is kept until the next start");
+    clean_up_after_update(Some(&exe));
+    assert!(!old.exists());
 }
