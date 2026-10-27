@@ -199,9 +199,16 @@ fn menu_commands(
     out
 }
 
-/// Room for the version between Report a bug and the caption buttons.
+/// Room for the version between Report a bug and the caption buttons, at least: a longer version
+/// (a nightly's, a downstream build's) widens it ([`right_group`]).
 const RIGHT_GROUP: f32 = 60.0;
 const CLUSTER_BUTTONS: f32 = 108.0;
+
+/// The space right of Report a bug for a version label `version_width` wide: its 12 px margin to
+/// the caption buttons and an 8 px gap before Report a bug.
+fn right_group(version_width: f32) -> f32 {
+    RIGHT_GROUP.max(12.0 + version_width + 8.0)
+}
 
 /// The centre of Help, between Settings and Report a bug.
 fn help_x(report: Rect) -> f32 {
@@ -210,8 +217,8 @@ fn help_x(report: Rect) -> f32 {
 
 /// The Report a bug button: labelled when there is room for its text (`label_width`, measured in
 /// the current language), otherwise just the icon.
-fn report_rect(bar: Rect, captions: f32, tabs_start: f32, label_width: f32) -> (Rect, bool) {
-    let right = bar.right() - captions - if bar.width() < 640.0 { 8.0 } else { RIGHT_GROUP };
+fn report_rect(bar: Rect, captions: f32, tabs_start: f32, label_width: f32, version_width: f32) -> (Rect, bool) {
+    let right = bar.right() - captions - if bar.width() < 640.0 { 8.0 } else { right_group(version_width) };
     // Icon, text and a margin that mirrors the icon side.
     let full = REPORT_TEXT_X + label_width + 11.0;
     let labeled = right - CLUSTER_BUTTONS - tabs_start >= 216.0 + full;
@@ -405,7 +412,12 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         let report_text = crate::i18n::tr("ui.report_a_bug");
         let report_font = FontId::proportional(t.font_button);
         let label_width = ui.painter().layout_no_wrap(report_text.to_string(), report_font.clone(), t.app_bar_text).size().x;
-        let (report, report_label) = report_rect(r, captions, tabs_start, label_width);
+        // The version links to its release notes; it is laid out first so Report a bug makes room.
+        let version = (r.width() >= 640.0).then(|| {
+            ui.painter().layout_no_wrap(format!("v{}", crate::update::current_version()), FontId::proportional(t.font_small), t.app_bar_text)
+        });
+        let version_width = version.as_ref().map_or(0.0, |g| g.size().x);
+        let (report, report_label) = report_rect(r, captions, tabs_start, label_width, version_width);
         // Assistant, Settings, Help and Report a bug form the right-hand cluster.
         if click(ui, help_x(report), "help", app.tr("ui.help"), true) {
             app.help.menu = !app.help.menu;
@@ -461,10 +473,7 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         if gresp.on_hover_text(prefs_tip).clicked() {
             crate::prefs::open_at(app, 0);
         }
-        if r.width() >= 640.0 {
-            // The version links to its release notes.
-            let galley =
-                ui.painter().layout_no_wrap(format!("v{}", crate::update::current_version()), FontId::proportional(t.font_small), t.app_bar_text);
+        if let Some(galley) = version {
             let vrect = Align2::RIGHT_CENTER.anchor_size(pos2(r.right() - 12.0 - captions, r.center().y), galley.size());
             let vresp = ui.interact(
                 vrect.expand2(vec2(2.0, 4.0)).intersect(Rect::everything_right_of(report.right())),
@@ -2581,7 +2590,7 @@ mod header_report_tests {
                 for captions in [0.0, crate::titlebar::WIDTH] {
                     // The English label, and a longer one (Russian is about 125 px).
                     for label_width in [80.0, 125.0] {
-                        let (report, labeled) = report_rect(bar, captions, 354.0, label_width);
+                        let (report, labeled) = report_rect(bar, captions, 354.0, label_width, 0.0);
                         assert!(bar.contains_rect(report));
                         let prefs = Rect::from_center_size(pos2(report.left() - 52.0, APP_BAR_HEIGHT / 2.0), vec2(32.0, 32.0));
                         let help = Rect::from_center_size(pos2(help_x(report), APP_BAR_HEIGHT / 2.0), vec2(32.0, 32.0));
@@ -2599,6 +2608,18 @@ mod header_report_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_long_version_moves_report_a_bug_left() {
+        let bar = Rect::from_min_size(egui::Pos2::ZERO, vec2(1400.0, APP_BAR_HEIGHT));
+        // "v0.23.1" fits the default room; a downstream or nightly version is wider.
+        for (captions, version_width) in [(0.0, 40.0), (0.0, 72.0), (crate::titlebar::WIDTH, 140.0)] {
+            let (report, _) = report_rect(bar, captions, 354.0, 80.0, version_width);
+            let version_left = bar.right() - 12.0 - captions - version_width;
+            assert!(report.right() + 8.0 <= version_left + 0.01, "{version_width}: Report a bug overlaps the version");
+        }
+        assert_eq!(right_group(40.0), RIGHT_GROUP, "a short version keeps upstream's layout");
     }
 
     /// The 34 px bar groups brand/home, File/Save/Undo/Redo, documents, then the right cluster.
