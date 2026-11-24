@@ -209,6 +209,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "xpt build: no Donate/Discord pills or switches (links::TITLE_BAR_PILLS)"]
     fn the_link_pills_leave_the_caption_buttons_and_the_controls_alone() {
         for width in [1280.0, 1600.0] {
             let mut w = Win::new(width);
