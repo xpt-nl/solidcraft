@@ -881,6 +881,7 @@ fn the_pill_shortens_in_a_narrow_title_bar() {
 /// Update, Donate and Discord are one kind of chip: the same height in both panel layouts, never
 /// crossing each other or Report a bug, at a wide and at narrow window widths.
 #[test]
+#[ignore = "xpt build: no Donate/Discord pills or switches (links::TITLE_BAR_PILLS)"]
 fn the_update_chip_matches_the_link_chips_in_both_layouts() {
     let dir = scratch();
     let (feed, _) = next_release_feed(&dir.0);
