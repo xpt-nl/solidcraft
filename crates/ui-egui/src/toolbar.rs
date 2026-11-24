@@ -5517,6 +5517,7 @@ mod app_bar_tests {
     }
 
     #[test]
+    #[ignore = "xpt build: no Donate/Discord pills or switches (links::TITLE_BAR_PILLS)"]
     fn app_bar_tray_card_columns_header_footer_and_short_labels_stay_bounded() {
         use crate::scenario::rect_of;
         let mut h = crate::scenario::Harness::new();
@@ -5877,6 +5878,7 @@ mod app_bar_tests {
     }
 
     #[test]
+    #[ignore = "xpt build: no Donate/Discord pills or switches (links::TITLE_BAR_PILLS)"]
     fn app_bar_layout_and_legacy_visibility_switches_both_gate_drawing() {
         let mut h = crate::scenario::Harness::new();
         h.app.home.open = false;

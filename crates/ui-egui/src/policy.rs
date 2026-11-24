@@ -792,6 +792,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "xpt build: no Donate/Discord pills or switches (links::TITLE_BAR_PILLS)"]
     fn a_policy_sets_its_settings_keeps_each_persons_choice_and_refuses_changes() {
         use egui::accesskit::{Role, Toggled};
         use serde_json::json;
