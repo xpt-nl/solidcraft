@@ -96,9 +96,15 @@ pub fn title_bar(app: &SolveApp) -> impl Iterator<Item = &'static Link> + '_ {
     LINKS.iter().filter(|l| (l.shown)(&app.preferences))
 }
 
+/// xpt build: the title bar never shows the Donate and Discord pills (they crowd the update
+/// button), the app bar editor doesn't offer them and Preferences drops their switches. The Help
+/// menu, About and the start page keep the links.
+pub const TITLE_BAR_PILLS: bool = false;
+
 /// The title bar's pills, left to right; `wide` gives the named ones their name.
 pub fn pills(app: &SolveApp, wide: bool) -> Vec<solidcraft_ui_kit::app_bar::Pill<'static>> {
     title_bar(app)
+        .filter(|_| TITLE_BAR_PILLS)
         .map(|l| solidcraft_ui_kit::app_bar::Pill {
             id: l.id,
             icon: l.icon,
