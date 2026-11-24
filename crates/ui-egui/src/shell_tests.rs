@@ -1887,6 +1887,7 @@ fn opened_url(h: &mut Harness) -> Option<String> {
 }
 
 #[test]
+#[ignore = "xpt build: no Donate/Discord pills or switches (links::TITLE_BAR_PILLS)"]
 fn title_bar_pills_open_their_pages_and_the_x_turns_off_only_that_pill() {
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1280,"height":720}));
@@ -1926,6 +1927,7 @@ fn title_bar_pills_open_their_pages_and_the_x_turns_off_only_that_pill() {
 /// #10260: an organization's policy shows "Managed by {name}" in the bar, Preferences and About;
 /// a computer without one shows none of it.
 #[test]
+#[ignore = "xpt build: no Donate/Discord pills or switches (links::TITLE_BAR_PILLS)"]
 fn an_organizations_policy_says_managed_by_in_the_bar_preferences_and_about() {
     let _language = solidcraft_ui_text::scope("en");
     let mut h = Harness::new();
